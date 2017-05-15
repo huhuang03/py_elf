@@ -1,6 +1,8 @@
 #!env python3
 # encoding=utf-8
 from pprint import pprint
+import io
+import os
 
 
 class BaseSegment:
@@ -15,9 +17,10 @@ class BaseSegment:
 
         self.content = self.f.read(size)
         self.f.seek(offset)
+        self.bs = io.BytesIO(self.content)
 
     def readInt(self, size):
-        return int.from_bytes(self.f.read(size), byteorder='little')
+        return int.from_bytes(self.bs.read(size), byteorder='little')
 
     def read16Int(self):
         return self.readInt(2)
@@ -26,13 +29,23 @@ class BaseSegment:
         return self.readInt(4)
 
     def readstr(self, size):
-        return str(self.f.read(size))
+        return str(self.bs.read(size))
 
-    def prettyp(self):
-        vardict = vars(self)
+    def readbytes(self, size):
+        return self.bs.read(size)
+
+    def delcommonuseless(self, vardict):
         vardict.pop("content", None)
         vardict.pop("f", None)
+        vardict.pop("bs", None)
+
+    def pp(self):
+        vardict = vars(self)
+        self.delcommonuseless(vardict)
         pprint(vardict)
+
+    def w2f(self, f):
+        f.write(self.content)
 
 
 class ELF:
@@ -41,6 +54,7 @@ class ELF:
     """
     def __init__(self, filePath):
         f = open(filePath, "r+b")
+        self.allseg = []
         self.elf_head = ELFHead(f)
         self.program_head_table = HeaderTable(f, self.elf_head.e_phnum,
                                               self.elf_head.e_phoff,
@@ -49,11 +63,69 @@ class ELF:
         self.section_head_table = HeaderTable(f, self.elf_head.e_shnum,
                                               self.elf_head.e_shoff,
                                               self.elf_head.e_shentsize)
+        self.p_headers = self.program_head_table.headers
+        self.s_headers = self.section_head_table.headers
 
-        self.elf_head.prettyp()
-        # print(self.elf_head)
-        # print(self.program_head_table)
-        # print(self.section_head_table)
+        self.p_sections = []
+        self.sections = []
+        for i in range(0, len(self.program_head_table.headers)):
+            head = self.program_head_table.headers[i]
+            self.p_sections.append(
+                Section(f, head.sh_offset, head.sh_size))
+
+        for i in range(0, len(self.section_head_table.headers)):
+            head = self.section_head_table.headers[i]
+            self.sections.append(
+                Section(f, head.sh_offset, head.sh_size))
+
+        self.allseg.append(self.elf_head)
+        self.allseg.append(self.program_head_table)
+        self.allseg.extend(self.p_sections)
+        self.allseg.extend(self.sections)
+        self.allseg.append(self.section_head_table)
+        # self.print_segments(self.allseg)
+        # self.print_type1()
+        # self.elf_head.pp()
+
+    def print_type1(self):
+        print("ELFHead: {} - {}".format(
+            self.elf_head.offset,
+            self.elf_head.offset + self.elf_head.size - 1))
+        print("ProgramHeadTable: {} - {}".format(
+            hex(self.program_head_table.offset),
+            hex(self.program_head_table.offset
+                + self.program_head_table.size - 1)
+        ))
+        for i in range(0, len(self.p_sections)):
+            section = self.p_sections[i]
+            print("Program Section:{}: {} - {}".format(
+                i,
+                hex(section.offset),
+                hex(section.offset + section.size - 1)
+            ))
+
+        for i in range(0, len(self.sections)):
+            section = self.sections[i]
+            print("Section:{}: {} - {}".format(
+                i,
+                hex(section.offset),
+                hex(section.offset + section.size - 1)
+            ))
+        print("SectionHeadTable: {} - {}".format(
+            self.section_head_table.offset,
+            self.section_head_table.offset + self.section_head_table.size - 1
+        ))
+
+    def print_segments(self, allseg):
+        for s in allseg:
+            print("{} - {}".format(s.offset, s.offset + s.size - 1))
+
+    def print_file_size(self, filePath):
+        print(os.stat(filePath).st_size)
+
+    def to_file(self, filepath):
+        f = open(filepath, "wb")
+        self.elf_head.w2f(f)
 
 
 class ELFHead(BaseSegment):
@@ -61,7 +133,7 @@ class ELFHead(BaseSegment):
     """
     def __init__(self, f):
         super().__init__(f, 0, 52)
-        self.e_ident = self.readstr(16)
+        self.e_ident = self.readbytes(16)
         self.e_type = self.read16Int()
         self.e_machine = self.read16Int()
         self.e_version = self.read32Int()
@@ -76,8 +148,11 @@ class ELFHead(BaseSegment):
         self.e_shnum = self.read16Int()
         self.e_shstrndx = self.read16Int()
 
-    def add_one_shnum():
-        pass
+    def pp(self):
+        vardict = vars(self)
+        self.delcommonuseless(vardict)
+        print("ELFHead: ")
+        pprint(vardict)
 
 
 class SectionHeader(BaseSegment):
@@ -102,6 +177,11 @@ class HeaderTable(BaseSegment):
         for i in range(0, e_num):
             self.headers.append(
                 SectionHeader(f, e_off + i * e_entsize, e_entsize))
+
+    def pp(self, t):
+        vardict = {"head_count:": len(self.headers)}
+        print("\n" + t + ":")
+        pprint(vardict)
 
 
 class Section(BaseSegment):
